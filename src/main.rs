@@ -1,5 +1,6 @@
 mod shell;
 
+use std::default;
 use std::{cmp::min, env, time::Duration};
 
 use ratatui::crossterm::event::KeyModifiers;
@@ -12,11 +13,20 @@ use ratatui::{
 };
 use shell::run;
 
+#[derive(Debug, Default, PartialEq)]
+enum Mode {
+    #[default]
+    Insert,
+    Normal,
+}
+
 #[derive(Debug, Default)]
 struct Model {
+    mode: Mode,
     counter: i32,
     running_state: RunningState,
     outputs: Vec<Output>,
+    commands: Vec<String>,
     viewing_output: usize,
     command: String,
 }
@@ -40,11 +50,15 @@ enum Message {
     Down,
     Up,
     Reset,
-    Enter,
+    Submit,
     Quit,
     NewerOutput,
     OlderOutput,
     AppendCommandChar(char),
+    Normal,
+    InsertBefore,
+    InsertAfter,
+    Backspace,
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -89,7 +103,8 @@ fn view(model: &mut Model, frame: &mut Frame) {
 
     frame.render_widget(
         Paragraph::new(format!(
-            "{}/{}",
+            "{:?}  {}/{}",
+            model.mode,
             model.viewing_output + 1,
             model.outputs.len()
         ))
@@ -120,33 +135,40 @@ fn view(model: &mut Model, frame: &mut Frame) {
 ///
 /// We don't need to pass in a `model` to this function in this example
 /// but you might need it as your project evolves
-fn handle_event(_: &Model) -> color_eyre::Result<Option<Message>> {
+fn handle_event(model: &Model) -> color_eyre::Result<Option<Message>> {
     if event::poll(Duration::from_millis(250))? {
         if let Event::Key(key) = event::read()? {
             if key.kind == event::KeyEventKind::Press {
-                return Ok(handle_key(key));
+                return Ok(handle_key(model, key));
             }
         }
     }
     Ok(None)
 }
 
-fn handle_key(key: event::KeyEvent) -> Option<Message> {
-    match key.code {
-        KeyCode::Char('i') => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
+    match model.mode {
+        Mode::Insert => match key.code {
+            KeyCode::Char(c) => Some(Message::AppendCommandChar(c)),
+            KeyCode::Esc => Some(Message::Normal),
+            KeyCode::Backspace => Some(Message::Backspace),
+            KeyCode::Enter => Some(Message::Submit),
+            _ => None,
+        },
+        Mode::Normal => match key.code {
+            KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Message::NewerOutput)
-            } else {
-                None
             }
-        }
-        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(Message::OlderOutput)
-        }
-        KeyCode::Char('q') => Some(Message::Quit),
-        KeyCode::Enter => Some(Message::Enter),
-        KeyCode::Char(c) => Some(Message::AppendCommandChar(c)),
-        _ => None,
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::OlderOutput)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::Quit)
+            }
+            KeyCode::Char('i') => Some(Message::InsertBefore),
+            KeyCode::Char('a') => Some(Message::InsertAfter),
+            _ => None,
+        },
     }
 }
 
@@ -165,11 +187,12 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             }
         }
         Message::Reset => model.counter = 0,
-        Message::Enter => {
+        Message::Submit => {
+            model.commands.push(model.command.clone());
             if let Some(output) = run(model.command.clone()) {
                 if let Ok(s) = String::from_utf8(output.stdout) {
                     model.outputs.push(Output {
-                        text: "blah".into(),
+                        text: model.command.clone(),
                         program: s,
                         scrollbar_state: ScrollbarState::default(),
                     });
@@ -199,6 +222,12 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             }
         }
         Message::AppendCommandChar(c) => model.command.push(c),
+        Message::Normal => model.mode = Mode::Normal,
+        Message::InsertBefore => model.mode = Mode::Insert,
+        Message::InsertAfter => model.mode = Mode::Insert,
+        Message::Backspace => {
+            let _ = model.command.pop();
+        }
     };
     None
 }
