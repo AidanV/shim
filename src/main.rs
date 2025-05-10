@@ -23,12 +23,12 @@ enum Mode {
 #[derive(Debug, Default)]
 struct Model {
     mode: Mode,
-    counter: i32,
     running_state: RunningState,
     outputs: Vec<Output>,
-    commands: Vec<String>,
+    previous_commands: Vec<String>,
     viewing_output: usize,
-    command: String,
+    current_command: String,
+    viewing_command: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -49,16 +49,26 @@ enum RunningState {
 enum Message {
     Down,
     Up,
-    Reset,
     Submit,
     Quit,
-    NewerOutput,
-    OlderOutput,
+    NextOutput,
+    PreviousOutput,
     AppendCommandChar(char),
     Normal,
     InsertBefore,
     InsertAfter,
     Backspace,
+    OutCommand,
+    InCommand,
+}
+
+impl Message {
+    fn is_editing_command(&self) -> bool {
+        matches!(
+            self,
+            Self::Submit | Self::AppendCommandChar(_) | Self::Backspace
+        )
+    }
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -124,10 +134,24 @@ fn view(model: &mut Model, frame: &mut Frame) {
             .block(Block::bordered().title(text)),
         layout[1],
     );
-    frame.render_widget(
-        Paragraph::new(format!("❯ {}", model.command)).block(Block::bordered().title(path)),
-        layout[2],
-    );
+
+    if let Some(curr) = model.viewing_command {
+        let show = model
+            .previous_commands
+            .get(curr)
+            .cloned()
+            .unwrap_or("".into());
+        frame.render_widget(
+            Paragraph::new(format!("❯ {}", show)).block(Block::bordered().title(path)),
+            layout[2],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(format!("❯ {}", model.current_command))
+                .block(Block::bordered().title(path)),
+            layout[2],
+        );
+    }
     frame.render_stateful_widget(Scrollbar::default(), layout[2], scrollbar_state);
 }
 
@@ -149,6 +173,9 @@ fn handle_event(model: &Model) -> color_eyre::Result<Option<Message>> {
 fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
     match model.mode {
         Mode::Insert => match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::Quit)
+            }
             KeyCode::Char(c) => Some(Message::AppendCommandChar(c)),
             KeyCode::Esc => Some(Message::Normal),
             KeyCode::Backspace => Some(Message::Backspace),
@@ -156,14 +183,17 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
             _ => None,
         },
         Mode::Normal => match key.code {
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::NextOutput)
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::PreviousOutput)
+            }
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::NewerOutput)
+                Some(Message::InCommand)
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::OlderOutput)
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Message::Quit)
+                Some(Message::OutCommand)
             }
             KeyCode::Char('i') => Some(Message::InsertBefore),
             KeyCode::Char('a') => Some(Message::InsertAfter),
@@ -173,45 +203,39 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
 }
 
 fn update(model: &mut Model, msg: Message) -> Option<Message> {
+    if msg.is_editing_command() {
+        if let Some(curr) = model.viewing_command {
+            model.current_command = model
+                .previous_commands
+                .get(curr)
+                .cloned()
+                .unwrap_or("".into());
+        }
+        model.viewing_command = None;
+    }
     match msg {
-        Message::Down => {
-            model.counter += 1;
-            if model.counter > 50 {
-                return Some(Message::Reset);
-            }
-        }
-        Message::Up => {
-            model.counter -= 1;
-            if model.counter < -50 {
-                return Some(Message::Reset);
-            }
-        }
-        Message::Reset => model.counter = 0,
+        Message::Down => {}
+        Message::Up => {}
         Message::Submit => {
-            model.commands.push(model.command.clone());
-            if let Some(output) = run(model.command.clone()) {
+            if let Some(output) = run(model.current_command.clone()) {
                 if let Ok(s) = String::from_utf8(output.stdout) {
                     model.outputs.push(Output {
-                        text: model.command.clone(),
+                        text: model.current_command.clone(),
                         program: s,
                         scrollbar_state: ScrollbarState::default(),
                     });
                     model.viewing_output = model.outputs.len() - 1;
                 }
             }
+            model.previous_commands.push(model.current_command.clone());
+            model.viewing_command = None;
+            model.current_command.clear();
         }
         Message::Quit => {
             // You can handle cleanup and exit here
             model.running_state = RunningState::Done;
         }
-        Message::NewerOutput => {
-            if model.outputs.is_empty() {
-                model.viewing_output = 0;
-            } else {
-                model.viewing_output = model.viewing_output.saturating_sub(1);
-            }
-        }
-        Message::OlderOutput => {
+        Message::NextOutput => {
             if model.outputs.is_empty() {
                 model.viewing_output = 0;
             } else {
@@ -221,12 +245,35 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 );
             }
         }
-        Message::AppendCommandChar(c) => model.command.push(c),
+        Message::PreviousOutput => {
+            if model.outputs.is_empty() {
+                model.viewing_output = 0;
+            } else {
+                model.viewing_output = model.viewing_output.saturating_sub(1);
+            }
+        }
+        Message::AppendCommandChar(c) => model.current_command.push(c),
         Message::Normal => model.mode = Mode::Normal,
         Message::InsertBefore => model.mode = Mode::Insert,
         Message::InsertAfter => model.mode = Mode::Insert,
         Message::Backspace => {
-            let _ = model.command.pop();
+            let _ = model.current_command.pop();
+        }
+        Message::OutCommand => {
+            if let Some(curr) = model.viewing_command {
+                model.viewing_command = Some(curr.saturating_sub(1));
+            } else if !model.previous_commands.is_empty() {
+                model.viewing_command = Some(model.previous_commands.len() - 1);
+            }
+        }
+        Message::InCommand => {
+            if let Some(curr) = model.viewing_command {
+                if curr >= model.previous_commands.len() - 1 {
+                    model.viewing_command = None;
+                } else {
+                    model.viewing_command = Some(curr + 1);
+                }
+            }
         }
     };
     None
