@@ -29,13 +29,14 @@ struct Model {
     viewing_output: usize,
     current_command: String,
     viewing_command: Option<usize>,
+    height: u16,
 }
 
 #[derive(Debug, Default)]
 struct Output {
     text: String,
     program: String,
-    scrollbar_state: ScrollbarState,
+    scroll: (u16, u16),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -60,6 +61,8 @@ enum Message {
     Backspace,
     OutCommand,
     InCommand,
+    ScrollDown,
+    ScrollUp,
 }
 
 impl Message {
@@ -106,6 +109,8 @@ fn view(model: &mut Model, frame: &mut Frame) {
         )
         .split(frame.area());
 
+    model.height = layout[1].height.saturating_sub(2); // for the borders
+
     let path = env::current_dir()
         .ok()
         .and_then(|p| p.to_str().map(|p| p.to_string()))
@@ -122,15 +127,14 @@ fn view(model: &mut Model, frame: &mut Frame) {
         layout[0],
     );
 
-    let scrollbar_state_default = &mut ScrollbarState::default();
-    let (program, text, scrollbar_state) = model
+    let (program, text, scroll) = model
         .outputs
         .get_mut(model.viewing_output)
-        .map(|o| (&o.program[..], &o.text[..], &mut o.scrollbar_state))
-        .unwrap_or(("", "", scrollbar_state_default));
+        .map(|o| (&o.program[..], &o.text[..], o.scroll))
+        .unwrap_or(("", "", (0, 0)));
     frame.render_widget(
         Paragraph::new(program)
-            // .scroll((28, 0))
+            .scroll(scroll)
             .block(Block::bordered().title(text)),
         layout[1],
     );
@@ -152,7 +156,6 @@ fn view(model: &mut Model, frame: &mut Frame) {
             layout[2],
         );
     }
-    frame.render_stateful_widget(Scrollbar::default(), layout[2], scrollbar_state);
 }
 
 /// Convert Event to Message
@@ -195,6 +198,12 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Message::OutCommand)
             }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::ScrollUp)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::ScrollDown)
+            }
             KeyCode::Char('i') => Some(Message::InsertBefore),
             KeyCode::Char('a') => Some(Message::InsertAfter),
             _ => None,
@@ -221,8 +230,8 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 if let Ok(s) = String::from_utf8(output.stdout) {
                     model.outputs.push(Output {
                         text: model.current_command.clone(),
-                        program: s,
-                        scrollbar_state: ScrollbarState::default(),
+                        program: s.clone(),
+                        scroll: ((s.lines().count() as u16).saturating_sub(model.height), 0),
                     });
                     model.viewing_output = model.outputs.len() - 1;
                 }
@@ -273,6 +282,18 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 } else {
                     model.viewing_command = Some(curr + 1);
                 }
+            }
+        }
+        Message::ScrollDown => {
+            if let Some(output) = model.outputs.get_mut(model.viewing_output) {
+                let (vert, horiz) = output.scroll;
+                output.scroll = (vert.saturating_add(10), horiz);
+            }
+        }
+        Message::ScrollUp => {
+            if let Some(output) = model.outputs.get_mut(model.viewing_output) {
+                let (vert, horiz) = output.scroll;
+                output.scroll = (vert.saturating_sub(10), horiz);
             }
         }
     };
