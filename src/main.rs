@@ -4,6 +4,7 @@ use std::default;
 use std::{cmp::min, env, time::Duration};
 
 use ratatui::crossterm::event::KeyModifiers;
+use ratatui::layout::Position;
 use ratatui::widgets::{Scrollbar, ScrollbarState};
 use ratatui::{
     Frame,
@@ -12,6 +13,33 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use shell::run;
+
+#[derive(Debug, PartialEq)]
+enum Cursor {
+    CommandLine(u16),
+    OutputBuffer(u16, u16),
+}
+
+impl Cursor {
+    fn left(&mut self) {
+        match self {
+            Cursor::CommandLine(c) => *c = c.saturating_sub(1),
+            Cursor::OutputBuffer(_, c) => *c = c.saturating_sub(1),
+        }
+    }
+    fn right(&mut self) {
+        match self {
+            Cursor::CommandLine(c) => *c = c.saturating_add(1),
+            Cursor::OutputBuffer(_, c) => *c = c.saturating_add(1),
+        }
+    }
+}
+
+impl Default for Cursor {
+    fn default() -> Self {
+        Cursor::CommandLine(0)
+    }
+}
 
 #[derive(Debug, Default, PartialEq)]
 enum Mode {
@@ -22,6 +50,7 @@ enum Mode {
 
 #[derive(Debug, Default)]
 struct Model {
+    cursor: Cursor,
     mode: Mode,
     running_state: RunningState,
     outputs: Vec<Output>,
@@ -156,6 +185,13 @@ fn view(model: &mut Model, frame: &mut Frame) {
             layout[2],
         );
     }
+
+    match model.cursor {
+        Cursor::CommandLine(c) => {
+            frame.set_cursor_position(Position::new(layout[2].x + 3 + c, layout[2].y + 1))
+        }
+        Cursor::OutputBuffer(_, _) => todo!(),
+    }
 }
 
 /// Convert Event to Message
@@ -239,6 +275,7 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             model.previous_commands.push(model.current_command.clone());
             model.viewing_command = None;
             model.current_command.clear();
+            model.cursor = Cursor::CommandLine(0);
         }
         Message::Quit => {
             // You can handle cleanup and exit here
@@ -261,11 +298,15 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 model.viewing_output = model.viewing_output.saturating_sub(1);
             }
         }
-        Message::AppendCommandChar(c) => model.current_command.push(c),
+        Message::AppendCommandChar(c) => {
+            model.current_command.push(c);
+            model.cursor.right();
+        }
         Message::Normal => model.mode = Mode::Normal,
         Message::InsertBefore => model.mode = Mode::Insert,
         Message::InsertAfter => model.mode = Mode::Insert,
         Message::Backspace => {
+            model.cursor.left();
             let _ = model.current_command.pop();
         }
         Message::OutCommand => {
