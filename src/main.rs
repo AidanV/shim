@@ -23,14 +23,14 @@ enum Cursor {
 impl Cursor {
     fn left(&mut self) {
         match self {
-            Cursor::CommandLine(c) => *c = c.saturating_sub(1),
-            Cursor::OutputBuffer(_, c) => *c = c.saturating_sub(1),
+            Cursor::CommandLine(x) => *x = x.saturating_sub(1),
+            Cursor::OutputBuffer(x, _) => *x = x.saturating_sub(1),
         }
     }
     fn right(&mut self) {
         match self {
-            Cursor::CommandLine(c) => *c = c.saturating_add(1),
-            Cursor::OutputBuffer(_, c) => *c = c.saturating_add(1),
+            Cursor::CommandLine(x) => *x = x.saturating_add(1),
+            Cursor::OutputBuffer(x, _) => *x = x.saturating_add(1),
         }
     }
 }
@@ -92,6 +92,8 @@ enum Message {
     InCommand,
     ScrollDown,
     ScrollUp,
+    Left,
+    Right,
 }
 
 impl Message {
@@ -187,10 +189,12 @@ fn view(model: &mut Model, frame: &mut Frame) {
     }
 
     match model.cursor {
-        Cursor::CommandLine(c) => {
-            frame.set_cursor_position(Position::new(layout[2].x + 3 + c, layout[2].y + 1))
+        Cursor::CommandLine(x) => {
+            frame.set_cursor_position(Position::new(layout[2].x + 3 + x, layout[2].y + 1))
         }
-        Cursor::OutputBuffer(_, _) => todo!(),
+        Cursor::OutputBuffer(x, y) => {
+            frame.set_cursor_position(Position::new(layout[1].x + 1 + x, layout[1].y + 1 + y))
+        }
     }
 }
 
@@ -242,6 +246,10 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
             }
             KeyCode::Char('i') => Some(Message::InsertBefore),
             KeyCode::Char('a') => Some(Message::InsertAfter),
+            KeyCode::Char('h') => Some(Message::Left),
+            KeyCode::Char('j') => Some(Message::Down),
+            KeyCode::Char('k') => Some(Message::Up),
+            KeyCode::Char('l') => Some(Message::Right),
             _ => None,
         },
     }
@@ -259,8 +267,30 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
         model.viewing_command = None;
     }
     match msg {
-        Message::Down => {}
-        Message::Up => {}
+        Message::Down => match model.cursor {
+            Cursor::CommandLine(_) => {}
+            Cursor::OutputBuffer(x, y) => {
+                if y + 1 >= model.height {
+                    model.cursor = Cursor::CommandLine(x);
+                } else {
+                    model.cursor = Cursor::OutputBuffer(x, y + 1)
+                }
+            }
+        },
+        Message::Up => match model.cursor {
+            Cursor::CommandLine(x) => {
+                model.cursor = Cursor::OutputBuffer(x, model.height.saturating_sub(1))
+            }
+            Cursor::OutputBuffer(x, y) => {
+                model.cursor = Cursor::OutputBuffer(x, y.saturating_sub(1))
+            }
+        },
+        Message::Left => {
+            model.cursor.left();
+        }
+        Message::Right => {
+            model.cursor.right();
+        }
         Message::Submit => {
             if let Some(output) = run(model.current_command.clone()) {
                 if let Ok(s) = String::from_utf8(output.stdout) {
@@ -303,8 +333,14 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             model.cursor.right();
         }
         Message::Normal => model.mode = Mode::Normal,
-        Message::InsertBefore => model.mode = Mode::Insert,
-        Message::InsertAfter => model.mode = Mode::Insert,
+        Message::InsertBefore => {
+            model.mode = Mode::Insert;
+            model.cursor = Cursor::CommandLine(0)
+        }
+        Message::InsertAfter => {
+            model.mode = Mode::Insert;
+            model.cursor = Cursor::CommandLine(0)
+        }
         Message::Backspace => {
             model.cursor.left();
             let _ = model.current_command.pop();
