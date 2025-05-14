@@ -33,6 +33,13 @@ impl Cursor {
             Cursor::OutputBuffer(x, _) => *x = x.saturating_add(1),
         }
     }
+
+    fn right_capped(&mut self, max: u16) {
+        match self {
+            Cursor::CommandLine(x) => *x = min(x.saturating_add(1), max),
+            Cursor::OutputBuffer(x, _) => *x = x.saturating_add(1),
+        }
+    }
 }
 
 impl Default for Cursor {
@@ -289,7 +296,18 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             model.cursor.left();
         }
         Message::Right => {
-            model.cursor.right();
+            let max = match model.cursor {
+                Cursor::CommandLine(_) => match model.viewing_command {
+                    Some(i) => model.previous_commands.get(i).map(|s| s.len()).unwrap_or(0),
+                    None => model.current_command.len(),
+                },
+                Cursor::OutputBuffer(_, y) => model
+                    .outputs
+                    .get(model.viewing_output)
+                    .map(|o| o.text.lines().nth(y as usize).unwrap_or("").len())
+                    .unwrap_or(0),
+            };
+            model.cursor.right_capped(max as u16);
         }
         Message::Submit => {
             if let Some(output) = run(model.current_command.clone()) {
