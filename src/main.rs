@@ -1,11 +1,9 @@
 mod shell;
 
-use std::default;
 use std::{cmp::min, env, time::Duration};
 
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::layout::Position;
-use ratatui::widgets::{Scrollbar, ScrollbarState};
 use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode},
@@ -68,10 +66,22 @@ struct Model {
     height: u16,
 }
 
+impl Model {
+    fn get_command_len(&self) -> u16 {
+        match self
+            .viewing_command
+            .and_then(|i| self.previous_commands.get(i))
+        {
+            Some(s) => s.len() as u16,
+            None => self.current_command.len() as u16,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Output {
-    text: String,
-    program: String,
+    command: String,
+    stdout: String,
     scroll: (u16, u16),
 }
 
@@ -90,7 +100,7 @@ enum Message {
     Quit,
     NextOutput,
     PreviousOutput,
-    AppendCommandChar(char),
+    WriteCommandChar(char),
     Normal,
     InsertBefore,
     InsertAfter,
@@ -101,13 +111,15 @@ enum Message {
     ScrollUp,
     Left,
     Right,
+    InsertBeforeLine,
+    InsertAfterLine,
 }
 
 impl Message {
     fn is_editing_command(&self) -> bool {
         matches!(
             self,
-            Self::Submit | Self::AppendCommandChar(_) | Self::Backspace
+            Self::Submit | Self::WriteCommandChar(_) | Self::Backspace
         )
     }
 }
@@ -168,7 +180,7 @@ fn view(model: &mut Model, frame: &mut Frame) {
     let (program, text, scroll) = model
         .outputs
         .get_mut(model.viewing_output)
-        .map(|o| (&o.program[..], &o.text[..], o.scroll))
+        .map(|o| (&o.stdout[..], &o.command[..], o.scroll))
         .unwrap_or(("", "", (0, 0)));
     frame.render_widget(
         Paragraph::new(program)
@@ -226,7 +238,7 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Message::Quit)
             }
-            KeyCode::Char(c) => Some(Message::AppendCommandChar(c)),
+            KeyCode::Char(c) => Some(Message::WriteCommandChar(c)),
             KeyCode::Esc => Some(Message::Normal),
             KeyCode::Backspace => Some(Message::Backspace),
             KeyCode::Enter => Some(Message::Submit),
@@ -253,6 +265,8 @@ fn handle_key(model: &Model, key: event::KeyEvent) -> Option<Message> {
             }
             KeyCode::Char('i') => Some(Message::InsertBefore),
             KeyCode::Char('a') => Some(Message::InsertAfter),
+            KeyCode::Char('I') => Some(Message::InsertBeforeLine),
+            KeyCode::Char('A') => Some(Message::InsertAfterLine),
             KeyCode::Char('h') => Some(Message::Left),
             KeyCode::Char('j') => Some(Message::Down),
             KeyCode::Char('k') => Some(Message::Up),
@@ -304,7 +318,10 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 Cursor::OutputBuffer(_, y) => model
                     .outputs
                     .get(model.viewing_output)
-                    .map(|o| o.text.lines().nth(y as usize).unwrap_or("").len())
+                    .map(|o| {
+                        let s = o.stdout.lines().nth((y + o.scroll.0) as usize).unwrap();
+                        s.len()
+                    })
                     .unwrap_or(0),
             };
             model.cursor.right_capped(max as u16);
@@ -313,8 +330,8 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
             if let Some(output) = run(model.current_command.clone()) {
                 if let Ok(s) = String::from_utf8(output.stdout) {
                     model.outputs.push(Output {
-                        text: model.current_command.clone(),
-                        program: s.clone(),
+                        command: model.current_command.clone(),
+                        stdout: s.clone(),
                         scroll: ((s.lines().count() as u16).saturating_sub(model.height), 0),
                     });
                     model.viewing_output = model.outputs.len() - 1;
@@ -346,18 +363,31 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 model.viewing_output = model.viewing_output.saturating_sub(1);
             }
         }
-        Message::AppendCommandChar(c) => {
-            model.current_command.push(c);
+        Message::WriteCommandChar(c) => {
+            match model.cursor {
+                Cursor::CommandLine(x) => model.current_command.insert(x as usize, c),
+                Cursor::OutputBuffer(_, _) => panic!(
+                    "not supposed to write character to command when cursor is in output buffer"
+                ),
+            }
             model.cursor.right();
         }
         Message::Normal => model.mode = Mode::Normal,
         Message::InsertBefore => {
             model.mode = Mode::Insert;
-            model.cursor = Cursor::CommandLine(0)
+            let x = match model.cursor {
+                Cursor::CommandLine(x) => x,
+                Cursor::OutputBuffer(x, _) => x,
+            };
+            model.cursor = Cursor::CommandLine(min(model.get_command_len(), x))
         }
         Message::InsertAfter => {
             model.mode = Mode::Insert;
-            model.cursor = Cursor::CommandLine(0)
+            let x = match model.cursor {
+                Cursor::CommandLine(x) => x,
+                Cursor::OutputBuffer(x, _) => x,
+            };
+            model.cursor = Cursor::CommandLine(min(model.get_command_len(), x + 1))
         }
         Message::Backspace => {
             model.cursor.left();
@@ -390,6 +420,14 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 let (vert, horiz) = output.scroll;
                 output.scroll = (vert.saturating_sub(10), horiz);
             }
+        }
+        Message::InsertBeforeLine => {
+            model.mode = Mode::Insert;
+            model.cursor = Cursor::CommandLine(0);
+        }
+        Message::InsertAfterLine => {
+            model.mode = Mode::Insert;
+            model.cursor = Cursor::CommandLine(model.get_command_len())
         }
     };
     None
