@@ -1,5 +1,6 @@
 mod shell;
 
+use std::usize;
 use std::{cmp::min, env, time::Duration};
 
 use ratatui::crossterm::event::KeyModifiers;
@@ -412,7 +413,13 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
         Message::ScrollDown => {
             if let Some(output) = model.outputs.get_mut(model.viewing_output) {
                 let (vert, horiz) = output.scroll;
-                output.scroll = (vert.saturating_add(10), horiz);
+                output.scroll = (
+                    min(
+                        vert.saturating_add(10),
+                        (output.stdout.lines().count() as u16).saturating_sub(model.height),
+                    ),
+                    horiz,
+                );
             }
         }
         Message::ScrollUp => {
