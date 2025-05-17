@@ -36,7 +36,7 @@ impl Cursor {
     fn right_capped(&mut self, max: u16) {
         match self {
             Cursor::CommandLine(x) => *x = min(x.saturating_add(1), max),
-            Cursor::OutputBuffer(x, _) => *x = x.saturating_add(1),
+            Cursor::OutputBuffer(x, _) => *x = min(x.saturating_add(1), max),
         }
     }
 }
@@ -319,10 +319,8 @@ fn update(model: &mut Model, msg: Message) -> Option<Message> {
                 Cursor::OutputBuffer(_, y) => model
                     .outputs
                     .get(model.viewing_output)
-                    .map(|o| {
-                        let s = o.stdout.lines().nth((y + o.scroll.0) as usize).unwrap();
-                        s.len()
-                    })
+                    .and_then(|o| o.stdout.lines().nth((y + o.scroll.0) as usize))
+                    .map(|s| s.len().saturating_sub(1))
                     .unwrap_or(0),
             };
             model.cursor.right_capped(max as u16);
