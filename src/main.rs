@@ -190,6 +190,11 @@ fn view(model: &mut Model, frame: &mut Frame) {
         layout[1],
     );
 
+    let start = match model.mode {
+        Mode::Insert => "❯",
+        Mode::Normal => "❮",
+    };
+
     if let Some(curr) = model.viewing_command {
         let show = model
             .previous_commands
@@ -197,12 +202,12 @@ fn view(model: &mut Model, frame: &mut Frame) {
             .cloned()
             .unwrap_or("".into());
         frame.render_widget(
-            Paragraph::new(format!("❯ {}", show)).block(Block::bordered().title(path)),
+            Paragraph::new(format!("{} {}", start, show)).block(Block::bordered().title(path)),
             layout[2],
         );
     } else {
         frame.render_widget(
-            Paragraph::new(format!("❯ {}", model.current_command))
+            Paragraph::new(format!("{} {}", start, model.current_command))
                 .block(Block::bordered().title(path)),
             layout[2],
         );

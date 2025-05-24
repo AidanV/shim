@@ -1,3 +1,4 @@
+use portable_pty::{CommandBuilder, PtySize, PtySystem, native_pty_system};
 use std::process::{Command, Output};
 
 pub fn run(command: String) -> Option<Output> {
